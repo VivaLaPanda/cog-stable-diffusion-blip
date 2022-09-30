@@ -13,9 +13,9 @@ from image_to_image import (
     preprocess_mask,
 )
 
+from BLIPPY.blip import ImageDescriber
 
 MODEL_CACHE = "diffusers-cache"
-
 
 class Predictor(BasePredictor):
     def setup(self):
@@ -32,6 +32,8 @@ class Predictor(BasePredictor):
             cache_dir=MODEL_CACHE,
             local_files_only=True,
         ).to("cuda")
+
+        self.blip = ImageDescriber()
 
     @torch.inference_mode()
     @torch.cuda.amp.autocast()
