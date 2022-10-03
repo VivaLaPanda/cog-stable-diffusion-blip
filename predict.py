@@ -13,7 +13,7 @@ from image_to_image import (
     preprocess_mask,
 )
 
-from BLIPPY.blip import ImageDescriber
+from blip import ImageDescriber
 
 MODEL_CACHE = "diffusers-cache"
 

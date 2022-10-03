@@ -1,20 +1,11 @@
 import clip
 import gc
-import numpy as np
 import os
-import pandas as pd
-import requests
 import torch
-import torchvision.transforms as T
-import torchvision.transforms.functional as TF
 
-from IPython.display import display
-from PIL import Image
-from torch import nn
-from torch.nn import functional as F
 from torchvision import transforms
 from torchvision.transforms.functional import InterpolationMode
-from models.blip import blip_decoder
+from BLIPPY.models.blip import blip_decoder
 
 class ImageDescriber():
     def __init__(
@@ -28,7 +19,7 @@ class ImageDescriber():
         blip_model.eval()
         blip_model = blip_model.to(self.device)
 
-        data_path = "./data"
+        data_path = "./BLIPPY/data/"
 
         self.artists = self.load_list(os.path.join(data_path, 'artists.txt'))
         self.flavors = self.load_list(os.path.join(data_path, 'flavors.txt'))
