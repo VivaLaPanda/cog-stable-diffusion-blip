@@ -15,7 +15,7 @@ class ImageDescriber():
 
         self.blip_image_eval_size = 384
         blip_model_url = 'https://storage.googleapis.com/sfr-vision-language-research/BLIP/models/model*_base_caption.pth'        
-        blip_model = blip_decoder(pretrained=blip_model_url, image_size=self.blip_image_eval_size, vit='base')
+        blip_model = blip_decoder(pretrained=blip_model_url, image_size=self.blip_image_eval_size, vit='base', med_config="./BLIPPY/configs/med_config.json")
         blip_model.eval()
         blip_model = blip_model.to(self.device)
 

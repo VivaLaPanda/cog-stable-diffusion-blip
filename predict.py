@@ -21,17 +21,17 @@ class Predictor(BasePredictor):
     def setup(self):
         """Load the model into memory to make running multiple predictions efficient"""
         print("Loading pipeline...")
-        scheduler = PNDMScheduler(
-            beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear"
-        )
-        self.pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
-            "CompVis/stable-diffusion-v1-4",
-            scheduler=scheduler,
-            revision="fp16",
-            torch_dtype=torch.float16,
-            cache_dir=MODEL_CACHE,
-            local_files_only=True,
-        ).to("cuda")
+        # scheduler = PNDMScheduler(
+        #     beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear"
+        # )
+        # self.pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
+        #     "CompVis/stable-diffusion-v1-4",
+        #     scheduler=scheduler,
+        #     revision="fp16",
+        #     torch_dtype=torch.float16,
+        #     cache_dir=MODEL_CACHE,
+        #     local_files_only=True,
+        # ).to("cuda")
 
         self.blip = ImageDescriber()
 
@@ -43,12 +43,12 @@ class Predictor(BasePredictor):
         width: int = Input(
             description="Width of output image. Maximum size is 1024x768 or 768x1024 because of memory limits",
             choices=[128, 256, 512, 768, 1024],
-            default=512,
+            default=128,
         ),
         height: int = Input(
             description="Height of output image. Maximum size is 1024x768 or 768x1024 because of memory limits",
             choices=[128, 256, 512, 768, 1024],
-            default=512,
+            default=128,
         ),
         init_image: Path = Input(
             description="Inital image to generate variations of. Will be resized to the specified width and height",
@@ -106,17 +106,18 @@ class Predictor(BasePredictor):
             mask = preprocess_mask(mask, width, height).to("cuda")
 
         generator = torch.Generator("cuda").manual_seed(seed)
-        output = self.pipe(
-            prompt=[prompt] * num_outputs if prompt is not None else None,
-            init_image=init_image,
-            mask=mask,
-            width=width,
-            height=height,
-            prompt_strength=prompt_strength,
-            guidance_scale=guidance_scale,
-            generator=generator,
-            num_inference_steps=num_inference_steps,
-        )
+        with torch.no_grad():
+            output = self.pipe(
+                prompt=[prompt] * num_outputs if prompt is not None else None,
+                init_image=init_image,
+                mask=mask,
+                width=width,
+                height=height,
+                prompt_strength=prompt_strength,
+                guidance_scale=guidance_scale,
+                generator=generator,
+                num_inference_steps=num_inference_steps,
+            )
         if any(output["nsfw_content_detected"]):
             raise Exception("NSFW content detected, please try a different prompt")
 
