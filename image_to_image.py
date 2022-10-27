@@ -18,12 +18,29 @@ from tqdm.auto import tqdm
 from transformers import CLIPFeatureExtractor, CLIPTextModel, CLIPTokenizer
 
 
-def preprocess_init_image(image: Image, width: int, height: int):
+def scale(w: int, h: int, max_size: int = 704, min_size: int = 512) -> tuple[int, int]:
+    if w / h == 1:
+        return 512, 512
+
+    # Downscale such that max(w,h) <= 704
+    downscaling = max_size / max(w, h)
+    if downscaling < 1:
+        return round(w * downscaling), round(h * downscaling)
+
+    # Upscale such that max(w,h) >= 512
+    upscaling = min_size / max(w, h)
+    if upscaling > 1:
+        return round(w * upscaling), round(h * upscaling)
+    return w, h
+
+def preprocess_init_image(image: Image):
+    w, h = scale(*image.size)
+    width, height = map(lambda x: (round(x / 64) * 64), (w, h))
     image = image.resize((width, height), resample=Image.LANCZOS)
     image = np.array(image).astype(np.float32) / 255.0
     image = image[None].transpose(0, 3, 1, 2)
     image = torch.from_numpy(image)
-    return 2.0 * image - 1.0
+    return 2.0 * image - 1.0, width, height
 
 
 def preprocess_mask(mask: Image, width: int, height: int):
@@ -73,6 +90,7 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
         width: int,
         height: int,
         prompt_strength: float = 0.8,
+        conceptual_prompt_strength: float = 0.5,
         num_inference_steps: int = 50,
         guidance_scale: float = 7.5,
         eta: float = 0.0,
@@ -89,12 +107,12 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
 
         if prompt_strength < 0 or prompt_strength > 1:
             raise ValueError(
-                f"The value of prompt_strength should in [0.0, 1.0] but is {prompt_strength}"
+                f"The value of structural_image_strength should in [0.0, 1.0] but is {prompt_strength}"
             )
 
-        if mask is not None and init_image is None:
+        if conceptual_prompt_strength < 0 or conceptual_prompt_strength > 1:
             raise ValueError(
-                "If mask is defined, then init_image also needs to be defined"
+                f"The value of conceptual_image_strength should in [0.0, 1.0] but is {conceptual_prompt_strength}"
             )
 
         if width % 8 != 0 or height % 8 != 0:
@@ -131,7 +149,7 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
 
         do_classifier_free_guidance = guidance_scale > 1.0
         text_embeddings = self.embed_text(
-            prompt, image_prompt, do_classifier_free_guidance, batch_size
+            prompt, image_prompt, conceptual_prompt_strength, do_classifier_free_guidance, batch_size
         )
 
 
@@ -248,6 +266,7 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
         self,
         prompt: Union[str, List[str]],
         image_prompt: Optional[Union[str, List[str]]],
+        conceptual_prompt_strength: float,
         do_classifier_free_guidance: bool,
         batch_size: int,
     ) -> torch.FloatTensor:
@@ -271,7 +290,7 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
         )
         img_cond = self.text_encoder(img_prompt_input.input_ids.to(self.device))[0]
 
-        text_embeddings = torch.lerp(text_embeddings, img_cond, 0.5)
+        text_embeddings = torch.lerp(text_embeddings, img_cond, conceptual_prompt_strength)
 
         # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
         # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
