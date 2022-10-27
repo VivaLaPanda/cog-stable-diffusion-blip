@@ -21,17 +21,17 @@ class Predictor(BasePredictor):
     def setup(self):
         """Load the model into memory to make running multiple predictions efficient"""
         print("Loading pipeline...")
-        # scheduler = PNDMScheduler(
-        #     beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear"
-        # )
-        # self.pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
-        #     "CompVis/stable-diffusion-v1-4",
-        #     scheduler=scheduler,
-        #     revision="fp16",
-        #     torch_dtype=torch.float16,
-        #     cache_dir=MODEL_CACHE,
-        #     local_files_only=True,
-        # ).to("cuda")
+        scheduler = PNDMScheduler(
+            beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear"
+        )
+        self.pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
+            "CompVis/stable-diffusion-v1-4",
+            scheduler=scheduler,
+            revision="fp16",
+            torch_dtype=torch.float16,
+            cache_dir=MODEL_CACHE,
+            local_files_only=True,
+        ).to("cuda")
 
         self.blip = ImageDescriber()
 
@@ -86,8 +86,12 @@ class Predictor(BasePredictor):
             )
 
         if init_image:
-            init_image = Image.open(init_image).convert("RGB")
-            init_image = preprocess_init_image(init_image, width, height).to("cuda")
+            original_image = Image.open(init_image).convert("RGB")
+            init_image = preprocess_init_image(original_image, width, height).to("cuda")
+
+            blip_prompt, clip_inter_prompt = self.blip.interrogate(original_image, models=["ViT-L/14"])
+            #clip_inter_prompt = "photo of a cat"
+            print(clip_inter_prompt)
 
             # use PNDM with init images
             scheduler = PNDMScheduler(
@@ -110,6 +114,7 @@ class Predictor(BasePredictor):
             output = self.pipe(
                 prompt=[prompt] * num_outputs if prompt is not None else None,
                 init_image=init_image,
+                image_prompt=clip_inter_prompt,
                 mask=mask,
                 width=width,
                 height=height,

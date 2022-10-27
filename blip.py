@@ -18,6 +18,7 @@ class ImageDescriber():
         blip_model = blip_decoder(pretrained=blip_model_url, image_size=self.blip_image_eval_size, vit='base', med_config="./BLIPPY/configs/med_config.json")
         blip_model.eval()
         blip_model = blip_model.to(self.device)
+        self.blip_model = blip_model
 
         data_path = "./BLIPPY/data/"
 

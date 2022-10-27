@@ -68,6 +68,7 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
         self,
         prompt: Union[str, List[str]],
         init_image: Optional[torch.FloatTensor],
+        image_prompt: str,
         mask: Optional[torch.FloatTensor],
         width: int,
         height: int,
@@ -130,8 +131,9 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
 
         do_classifier_free_guidance = guidance_scale > 1.0
         text_embeddings = self.embed_text(
-            prompt, do_classifier_free_guidance, batch_size
+            prompt, image_prompt, do_classifier_free_guidance, batch_size
         )
+
 
         # prepare extra kwargs for the scheduler step, since not all schedulers have the same signature
         # eta (η) is only used with the DDIMScheduler, it will be ignored for other schedulers.
@@ -200,16 +202,16 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
         image = image.cpu().permute(0, 2, 3, 1).numpy()
 
         # run safety checker
-        safety_cheker_input = self.feature_extractor(
-            self.numpy_to_pil(image), return_tensors="pt"
-        ).to(self.device)
-        image, has_nsfw_concept = self.safety_checker(
-            images=image, clip_input=safety_cheker_input.pixel_values
-        )
+        # safety_cheker_input = self.feature_extractor(
+        #     self.numpy_to_pil(image), return_tensors="pt"
+        # ).to(self.device)
+        # image, has_nsfw_concept = self.safety_checker(
+        #     images=image, clip_input=safety_cheker_input.pixel_values
+        # )
 
         image = self.numpy_to_pil(image)
 
-        return {"sample": image, "nsfw_content_detected": has_nsfw_concept}
+        return {"sample": image, "nsfw_content_detected": []}
 
     def latents_from_init_image(
         self,
@@ -245,6 +247,7 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
     def embed_text(
         self,
         prompt: Union[str, List[str]],
+        image_prompt: Optional[Union[str, List[str]]],
         do_classifier_free_guidance: bool,
         batch_size: int,
     ) -> torch.FloatTensor:
@@ -257,6 +260,18 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
             return_tensors="pt",
         )
         text_embeddings = self.text_encoder(text_input.input_ids.to(self.device))[0]
+
+        # Get the embeddings for the image prompt
+        img_prompt_input = self.tokenizer(
+            image_prompt,
+            padding="max_length",
+            max_length=self.tokenizer.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        )
+        img_cond = self.text_encoder(img_prompt_input.input_ids.to(self.device))[0]
+
+        text_embeddings = torch.lerp(text_embeddings, img_cond, 0.5)
 
         # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
         # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
