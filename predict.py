@@ -4,6 +4,8 @@ from typing import Optional, List
 import torch
 from torch import autocast
 from diffusers import PNDMScheduler, LMSDiscreteScheduler
+
+from transformers import CLIPFeatureExtractor
 from PIL import Image
 from cog import BasePredictor, Input, Path
 
@@ -20,17 +22,15 @@ class Predictor(BasePredictor):
     def setup(self):
         """Load the model into memory to make running multiple predictions efficient"""
         print("Loading pipeline...")
-        scheduler = PNDMScheduler(
-            beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear"
-        )
         self.pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
-            "CompVis/stable-diffusion-v1-4",
-            scheduler=scheduler,
+            "stabilityai/stable-diffusion-2-base",
             revision="fp16",
             torch_dtype=torch.float16,
             cache_dir=MODEL_CACHE,
+            safety_checker=lambda images, **kwargs: (images, [False] * len(images)),
+            feature_extractor=CLIPFeatureExtractor.from_pretrained("openai/clip-vit-base-patch32"),
             local_files_only=True,
-        ).to("cuda")
+            ).to("cuda")
 
         self.blip = ImageDescriber()
 
@@ -71,7 +71,8 @@ class Predictor(BasePredictor):
             )
 
         original_image = Image.open(init_image).convert("RGB")
-        init_image, width, height = preprocess_init_image(original_image, width, height).to("cuda")
+        init_image, width, height = preprocess_init_image(original_image)
+        init_image = init_image.to("cuda")
 
         blip_prompt, clip_inter_prompt = self.blip.interrogate(original_image, models=["ViT-L/14"])
         
@@ -79,11 +80,6 @@ class Predictor(BasePredictor):
         print("Captioning using", captioning_model)
         print("Image prompt:", img_prompt)
 
-        scheduler = PNDMScheduler(
-            beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear"
-        )
-
-        self.pipe.scheduler = scheduler
         generator = torch.Generator("cuda").manual_seed(seed)
         with torch.no_grad():
             output = self.pipe(

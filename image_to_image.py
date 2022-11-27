@@ -69,7 +69,6 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
         feature_extractor: CLIPFeatureExtractor,
     ):
         super().__init__()
-        scheduler = scheduler.set_format("pt")
         self.register_modules(
             vae=vae,
             text_encoder=text_encoder,
@@ -86,7 +85,6 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
         prompt: Union[str, List[str]],
         init_image: Optional[torch.FloatTensor],
         image_prompt: str,
-        mask: Optional[torch.FloatTensor],
         width: int,
         height: int,
         prompt_strength: float = 0.8,
@@ -164,8 +162,6 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
         if accepts_eta:
             extra_step_kwargs["eta"] = eta
 
-        mask_noise = torch.randn(latents.shape, generator=generator, device=self.device)
-
         # if we use LMSDiscreteScheduler, let's make sure latents are mulitplied by sigmas
         if isinstance(self.scheduler, LMSDiscreteScheduler):
             latents = latents * self.scheduler.sigmas[0]
@@ -203,20 +199,12 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
                     "prev_sample"
                 ]
 
-            # replace the unmasked part with original latents, with added noise
-            if mask is not None:
-                timesteps = self.scheduler.timesteps[t_start + i]
-                timesteps = torch.tensor(
-                    [timesteps] * batch_size, dtype=torch.long, device=self.device
-                )
-                noisy_init_latents = self.scheduler.add_noise(init_latents_orig, mask_noise, timesteps)
-                latents = noisy_init_latents * mask + latents * (1 - mask)
 
         # scale and decode the image latents with vae
         latents = 1 / 0.18215 * latents
         image = self.vae.decode(latents)
 
-        image = (image / 2 + 0.5).clamp(0, 1)
+        image = (image.sample / 2 + 0.5).clamp(0, 1)
         image = image.cpu().permute(0, 2, 3, 1).numpy()
 
         # run safety checker
@@ -241,7 +229,7 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
         generator: Optional[torch.Generator],
     ) -> Tuple[torch.FloatTensor, torch.FloatTensor, int]:
         # encode the init image into latents and scale the latents
-        init_latents = self.vae.encode(init_image.to(self.device)).sample()
+        init_latents = self.vae.encode(init_image.to(self.device)).latent_dist.sample()
         init_latents = 0.18215 * init_latents
         init_latents_orig = init_latents
 
