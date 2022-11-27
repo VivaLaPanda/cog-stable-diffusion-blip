@@ -4,13 +4,13 @@ import os
 import sys
 
 import torch
-from diffusers import StableDiffusionPipeline
+from diffusers import StableDiffusionImg2ImgPipeline
 
 os.makedirs("diffusers-cache", exist_ok=True)
 
 
-pipe = StableDiffusionPipeline.from_pretrained(
-    "CompVis/stable-diffusion-v1-4",
+pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
+    "stabilityai/stable-diffusion-2-base",
     cache_dir="diffusers-cache",
     revision="fp16",
     torch_dtype=torch.float16,

@@ -4,13 +4,14 @@ from typing import Optional, List
 import torch
 from torch import autocast
 from diffusers import PNDMScheduler, LMSDiscreteScheduler
+
+from transformers import CLIPFeatureExtractor
 from PIL import Image
 from cog import BasePredictor, Input, Path
 
 from image_to_image import (
     StableDiffusionImg2ImgPipeline,
     preprocess_init_image,
-    preprocess_mask,
 )
 
 from blip import ImageDescriber
@@ -21,17 +22,15 @@ class Predictor(BasePredictor):
     def setup(self):
         """Load the model into memory to make running multiple predictions efficient"""
         print("Loading pipeline...")
-        scheduler = PNDMScheduler(
-            beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear"
-        )
         self.pipe = StableDiffusionImg2ImgPipeline.from_pretrained(
-            "CompVis/stable-diffusion-v1-4",
-            scheduler=scheduler,
+            "stabilityai/stable-diffusion-2-base",
             revision="fp16",
             torch_dtype=torch.float16,
             cache_dir=MODEL_CACHE,
+            safety_checker=lambda images, **kwargs: (images, [False] * len(images)),
+            feature_extractor=CLIPFeatureExtractor.from_pretrained("openai/clip-vit-base-patch32"),
             local_files_only=True,
-        ).to("cuda")
+            ).to("cuda")
 
         self.blip = ImageDescriber()
 
@@ -40,36 +39,22 @@ class Predictor(BasePredictor):
     def predict(
         self,
         prompt: str = Input(description="Input prompt", default=""),
-        width: int = Input(
-            description="Width of output image. Maximum size is 1024x768 or 768x1024 because of memory limits",
-            choices=[128, 256, 512, 768, 1024],
-            default=128,
-        ),
-        height: int = Input(
-            description="Height of output image. Maximum size is 1024x768 or 768x1024 because of memory limits",
-            choices=[128, 256, 512, 768, 1024],
-            default=128,
-        ),
         init_image: Path = Input(
-            description="Inital image to generate variations of. Will be resized to the specified width and height",
+            description="Inital image to provide structural or conceptual guidance",
             default=None,
         ),
-        mask: Path = Input(
-            description="Black and white image to use as mask for inpainting over init_image. Black pixels are inpainted and white pixels are preserved. Experimental feature, tends to work better with prompt strength of 0.5-0.7",
-            default=None,
+        captioning_model: str = Input(
+            description="Captioning model to use. One of 'blip' or 'clip-interrogator-v1'",
+            default="blip",
+            choices=["blip", "clip-interrogator-v1"],
         ),
-        prompt_strength: float = Input(
-            description="Prompt strength when using init image. 1.0 corresponds to full destruction of information in init image",
-            default=0.8,
+        structural_image_strength: float = Input(
+            description="Structural (standard) image strength. 0.0 corresponds to full destruction of information, and does not use the initial image for structure.",
+            default=0.15,
         ),
-        num_outputs: int = Input(
-            description="Number of images to output", choices=[1, 4], default=1
-        ),
-        num_inference_steps: int = Input(
-            description="Number of denoising steps", ge=1, le=500, default=50
-        ),
-        guidance_scale: float = Input(
-            description="Scale for classifier-free guidance", ge=1, le=20, default=7.5
+        conceptual_image_strength: float = Input(
+            description="Conceptual image strength. 0.0 doesn't use the image conceptually at all, 1.0 only uses the image concept and ignores the prompt.",
+            default=0.4
         ),
         seed: int = Input(
             description="Random seed. Leave blank to randomize the seed", default=None
@@ -80,48 +65,32 @@ class Predictor(BasePredictor):
             seed = int.from_bytes(os.urandom(2), "big")
         print(f"Using seed: {seed}")
 
-        if width == height == 1024:
+        if init_image is None:
             raise ValueError(
-                "Maximum size is 1024x768 or 768x1024 pixels, because of memory limits. Please select a lower width or height."
+                "Please select an initial image."
             )
 
-        if init_image:
-            original_image = Image.open(init_image).convert("RGB")
-            init_image = preprocess_init_image(original_image, width, height).to("cuda")
+        original_image = Image.open(init_image).convert("RGB")
+        init_image, width, height = preprocess_init_image(original_image)
+        init_image = init_image.to("cuda")
 
-            blip_prompt, clip_inter_prompt = self.blip.interrogate(original_image, models=["ViT-L/14"])
-            #clip_inter_prompt = "photo of a cat"
-            print(clip_inter_prompt)
-
-            # use PNDM with init images
-            scheduler = PNDMScheduler(
-                beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear"
-            )
-        else:
-            # use LMS without init images
-            scheduler = LMSDiscreteScheduler(
-                beta_start=0.00085, beta_end=0.012, beta_schedule="scaled_linear"
-            )
-
-        self.pipe.scheduler = scheduler
-
-        if mask:
-            mask = Image.open(mask).convert("RGB")
-            mask = preprocess_mask(mask, width, height).to("cuda")
+        blip_prompt, clip_inter_prompt = self.blip.interrogate(original_image, models=["ViT-L/14"])
+        
+        img_prompt = blip_prompt if captioning_model == "blip" else clip_inter_prompt
+        print("Captioning using", captioning_model)
+        print("Image prompt:", img_prompt)
 
         generator = torch.Generator("cuda").manual_seed(seed)
         with torch.no_grad():
             output = self.pipe(
-                prompt=[prompt] * num_outputs if prompt is not None else None,
+                prompt=[prompt] * 4 if prompt is not None else None,
                 init_image=init_image,
-                image_prompt=clip_inter_prompt,
-                mask=mask,
+                image_prompt=img_prompt,
                 width=width,
                 height=height,
-                prompt_strength=prompt_strength,
-                guidance_scale=guidance_scale,
+                prompt_strength=(1-structural_image_strength),
+                conceptual_prompt_strength=conceptual_image_strength,
                 generator=generator,
-                num_inference_steps=num_inference_steps,
             )
         if any(output["nsfw_content_detected"]):
             raise Exception("NSFW content detected, please try a different prompt")

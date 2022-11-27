@@ -18,12 +18,29 @@ from tqdm.auto import tqdm
 from transformers import CLIPFeatureExtractor, CLIPTextModel, CLIPTokenizer
 
 
-def preprocess_init_image(image: Image, width: int, height: int):
+def scale(w: int, h: int, max_size: int = 704, min_size: int = 512) -> tuple[int, int]:
+    if w / h == 1:
+        return 512, 512
+
+    # Downscale such that max(w,h) <= 704
+    downscaling = max_size / max(w, h)
+    if downscaling < 1:
+        return round(w * downscaling), round(h * downscaling)
+
+    # Upscale such that max(w,h) >= 512
+    upscaling = min_size / max(w, h)
+    if upscaling > 1:
+        return round(w * upscaling), round(h * upscaling)
+    return w, h
+
+def preprocess_init_image(image: Image):
+    w, h = scale(*image.size)
+    width, height = map(lambda x: (round(x / 64) * 64), (w, h))
     image = image.resize((width, height), resample=Image.LANCZOS)
     image = np.array(image).astype(np.float32) / 255.0
     image = image[None].transpose(0, 3, 1, 2)
     image = torch.from_numpy(image)
-    return 2.0 * image - 1.0
+    return 2.0 * image - 1.0, width, height
 
 
 def preprocess_mask(mask: Image, width: int, height: int):
@@ -52,7 +69,6 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
         feature_extractor: CLIPFeatureExtractor,
     ):
         super().__init__()
-        scheduler = scheduler.set_format("pt")
         self.register_modules(
             vae=vae,
             text_encoder=text_encoder,
@@ -69,10 +85,10 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
         prompt: Union[str, List[str]],
         init_image: Optional[torch.FloatTensor],
         image_prompt: str,
-        mask: Optional[torch.FloatTensor],
         width: int,
         height: int,
         prompt_strength: float = 0.8,
+        conceptual_prompt_strength: float = 0.5,
         num_inference_steps: int = 50,
         guidance_scale: float = 7.5,
         eta: float = 0.0,
@@ -89,12 +105,12 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
 
         if prompt_strength < 0 or prompt_strength > 1:
             raise ValueError(
-                f"The value of prompt_strength should in [0.0, 1.0] but is {prompt_strength}"
+                f"The value of structural_image_strength should in [0.0, 1.0] but is {prompt_strength}"
             )
 
-        if mask is not None and init_image is None:
+        if conceptual_prompt_strength < 0 or conceptual_prompt_strength > 1:
             raise ValueError(
-                "If mask is defined, then init_image also needs to be defined"
+                f"The value of conceptual_image_strength should in [0.0, 1.0] but is {conceptual_prompt_strength}"
             )
 
         if width % 8 != 0 or height % 8 != 0:
@@ -131,7 +147,7 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
 
         do_classifier_free_guidance = guidance_scale > 1.0
         text_embeddings = self.embed_text(
-            prompt, image_prompt, do_classifier_free_guidance, batch_size
+            prompt, image_prompt, conceptual_prompt_strength, do_classifier_free_guidance, batch_size
         )
 
 
@@ -145,8 +161,6 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
         extra_step_kwargs = {}
         if accepts_eta:
             extra_step_kwargs["eta"] = eta
-
-        mask_noise = torch.randn(latents.shape, generator=generator, device=self.device)
 
         # if we use LMSDiscreteScheduler, let's make sure latents are mulitplied by sigmas
         if isinstance(self.scheduler, LMSDiscreteScheduler):
@@ -185,20 +199,12 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
                     "prev_sample"
                 ]
 
-            # replace the unmasked part with original latents, with added noise
-            if mask is not None:
-                timesteps = self.scheduler.timesteps[t_start + i]
-                timesteps = torch.tensor(
-                    [timesteps] * batch_size, dtype=torch.long, device=self.device
-                )
-                noisy_init_latents = self.scheduler.add_noise(init_latents_orig, mask_noise, timesteps)
-                latents = noisy_init_latents * mask + latents * (1 - mask)
 
         # scale and decode the image latents with vae
         latents = 1 / 0.18215 * latents
         image = self.vae.decode(latents)
 
-        image = (image / 2 + 0.5).clamp(0, 1)
+        image = (image.sample / 2 + 0.5).clamp(0, 1)
         image = image.cpu().permute(0, 2, 3, 1).numpy()
 
         # run safety checker
@@ -223,7 +229,7 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
         generator: Optional[torch.Generator],
     ) -> Tuple[torch.FloatTensor, torch.FloatTensor, int]:
         # encode the init image into latents and scale the latents
-        init_latents = self.vae.encode(init_image.to(self.device)).sample()
+        init_latents = self.vae.encode(init_image.to(self.device)).latent_dist.sample()
         init_latents = 0.18215 * init_latents
         init_latents_orig = init_latents
 
@@ -248,6 +254,7 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
         self,
         prompt: Union[str, List[str]],
         image_prompt: Optional[Union[str, List[str]]],
+        conceptual_prompt_strength: float,
         do_classifier_free_guidance: bool,
         batch_size: int,
     ) -> torch.FloatTensor:
@@ -271,7 +278,7 @@ class StableDiffusionImg2ImgPipeline(DiffusionPipeline):
         )
         img_cond = self.text_encoder(img_prompt_input.input_ids.to(self.device))[0]
 
-        text_embeddings = torch.lerp(text_embeddings, img_cond, 0.5)
+        text_embeddings = torch.lerp(text_embeddings, img_cond, conceptual_prompt_strength)
 
         # here `guidance_scale` is defined analog to the guidance weight `w` of equation (2)
         # of the Imagen paper: https://arxiv.org/pdf/2205.11487.pdf . `guidance_scale = 1`
